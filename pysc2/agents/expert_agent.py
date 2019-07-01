@@ -29,4 +29,24 @@ class ExpertAgent(base_agent.BaseAgent):
         else:
             return FUNCTIONS.select_army("select")
 
+class Defeat(base_agent.BaseAgent):
+    def step(self, obs):
+        super().step(obs)
+
+        if FUNCTIONS.Attack_screen.id in obs.observation.available_actions:
+            player_relative = obs.observation.feature_screen.player_relative
+            y,x = (player_relative==_PLAYER_ENEMY).nonzero()
+
+            enemy = list(zip(x,y))
+            power = obs.observation.feature_screen.power
+            print(x)
+            print(y)
+            print(power.nonzero())
+            
+        if FUNCTIONS.select_army.id in obs.observation.available_actions:
+            return FUNCTIONS.select_army("select")
+        
+        return FUNCTIONS.no_op()
+
+
         
