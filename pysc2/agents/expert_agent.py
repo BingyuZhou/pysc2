@@ -38,10 +38,7 @@ class Defeat(base_agent.BaseAgent):
             y,x = (player_relative==_PLAYER_ENEMY).nonzero()
 
             enemy = list(zip(x,y))
-            power = obs.observation.feature_screen.power
-            print(x)
-            print(y)
-            print(power.nonzero())
+            
             
         if FUNCTIONS.select_army.id in obs.observation.available_actions:
             return FUNCTIONS.select_army("select")

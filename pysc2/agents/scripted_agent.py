@@ -17,11 +17,12 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy
+import numpy as np
 
 from pysc2.agents import base_agent
 from pysc2.lib import actions
 from pysc2.lib import features
+from pysc2.lib import units
 
 _PLAYER_SELF = features.PlayerRelative.SELF
 _PLAYER_NEUTRAL = features.PlayerRelative.NEUTRAL  # beacon/minerals
@@ -146,4 +147,40 @@ class DefeatRoaches(base_agent.BaseAgent):
     if FUNCTIONS.select_army.id in obs.observation.available_actions:
       return FUNCTIONS.select_army("select")
 
+    return FUNCTIONS.no_op()
+
+class CollectMineralsAndGas(base_agent.BaseAgent):
+
+  def reset(self):
+    super().reset()
+    self.select_scv = False
+    self.build_refinery = False
+
+  def step(self, obs):
+    super().step(obs)
+
+    minerals_xy = [[unit.x, unit.y] for unit in obs.observation.feature_units if unit.unit_type == units.Neutral.MineralField]
+    gas_xy = [[unit.x, unit.y] for unit in obs.observation.feature_units if unit.unit_type == units.Neutral.VespeneGeyser]
+
+    if FUNCTIONS.Build_Refinery_screen.id in obs.observation.available_actions:
+      self.select_scv = False
+      self.build_refinery = True
+      return FUNCTIONS.Build_Refinery_screen("now", gas_xy[0])
+
+    if not self.select_scv:
+      if not self.build_refinery and FUNCTIONS.select_idle_worker.id in obs.observation.available_actions:
+        self.select_scv = True
+        print("idle")
+        return FUNCTIONS.select_idle_worker("select")
+
+      if self.build_refinery and FUNCTIONS.select_point.id in obs.observation.available_actions:
+        for unit in obs.observation.feature_units:
+          if unit.unit_type == units.Terran.SCV:
+            self.select_scv = True
+            return FUNCTIONS.select_point("select", [unit.x, unit.y])
+    else:
+      
+      if FUNCTIONS.Harvest_Gather_screen.id in obs.observation.available_actions:
+        self.select_scv = False
+        return FUNCTIONS.Harvest_Gather_screen("now", minerals_xy[0])
     return FUNCTIONS.no_op()
