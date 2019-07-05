@@ -17,7 +17,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
+import numpy 
 
 from pysc2.agents import base_agent
 from pysc2.lib import actions
@@ -154,33 +154,66 @@ class CollectMineralsAndGas(base_agent.BaseAgent):
   def reset(self):
     super().reset()
     self.select_scv = False
-    self.build_refinery = False
+    self.gas_list = []
 
   def step(self, obs):
     super().step(obs)
 
     minerals_xy = [[unit.x, unit.y] for unit in obs.observation.feature_units if unit.unit_type == units.Neutral.MineralField]
     gas_xy = [[unit.x, unit.y] for unit in obs.observation.feature_units if unit.unit_type == units.Neutral.VespeneGeyser]
+  
+    scv = [unit for unit in obs.observation.feature_units if unit.unit_type==units.Terran.SCV and unit.is_selected==self.select_scv]
 
     if FUNCTIONS.Build_Refinery_screen.id in obs.observation.available_actions:
-      self.select_scv = False
-      self.build_refinery = True
-      return FUNCTIONS.Build_Refinery_screen("now", gas_xy[0])
-
-    if not self.select_scv:
-      if not self.build_refinery and FUNCTIONS.select_idle_worker.id in obs.observation.available_actions:
-        self.select_scv = True
-        print("idle")
-        return FUNCTIONS.select_idle_worker("select")
-
-      if self.build_refinery and FUNCTIONS.select_point.id in obs.observation.available_actions:
-        for unit in obs.observation.feature_units:
+      # Select scv
+      if not (self.select_scv and scv):
+        if obs.observation.player.idle_worker_count !=0:
+          print("select idle")
+          self.select_scv = True
+          return FUNCTIONS.select_idle_worker('select')
+        
+        if scv:
+          cluster = scv
+        else:
+          cluster = obs.observation.feature_units
+          
+        for unit in cluster:
           if unit.unit_type == units.Terran.SCV:
+            print("select scv mineral")
             self.select_scv = True
-            return FUNCTIONS.select_point("select", [unit.x, unit.y])
-    else:
+            return FUNCTIONS.select_point("select", [unit.x,unit.y])
       
-      if FUNCTIONS.Harvest_Gather_screen.id in obs.observation.available_actions:
+      refinery_count = 0 # Count the refineries
+      for unit in obs.observation.feature_units:
+        if unit.unit_type == units.Terran.Refinery:
+          refinery_count += 1
+      # When refineries are full
+      if refinery_count == len(gas_xy):
+        # Send SCV to refinery
+        print("harvest gas")
         self.select_scv = False
-        return FUNCTIONS.Harvest_Gather_screen("now", minerals_xy[0])
+        return FUNCTIONS.Harvest_Gather_screen("queued", gas_xy[0])
+          
+
+      # Refineries are not fully utilized
+      for gas in gas_xy:
+        if gas not in self.gas_list:
+          self.gas_list.append(gas)
+          print("build refinery")
+          self.select_scv = False
+          return FUNCTIONS.Build_Refinery_screen("queued", gas)
+    
+    if not self.select_scv:
+      if FUNCTIONS.select_idle_worker.id in obs.observation.available_actions:
+        self.select_scv = True
+        return FUNCTIONS.select_idle_worker("select")
+      else:
+        return FUNCTIONS.no_op()
+   
+    if FUNCTIONS.Harvest_Gather_screen.id in obs.observation.available_actions:
+      self.select_scv = False
+      print("harv mineral")
+      return FUNCTIONS.Harvest_Gather_screen("now", minerals_xy[0])
+
+    print("no op")
     return FUNCTIONS.no_op()
