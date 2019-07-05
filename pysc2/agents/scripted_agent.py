@@ -164,6 +164,20 @@ class CollectMineralsAndGas(base_agent.BaseAgent):
   
     scv = [unit for unit in obs.observation.feature_units if unit.unit_type==units.Terran.SCV and unit.is_selected==self.select_scv]
 
+    refinery_count = 0 # Count the refineries
+    for unit in obs.observation.feature_units:
+      if unit.unit_type == units.Terran.Refinery:
+        refinery_count += 1
+
+    if refinery_count > 0:
+      
+      if FUNCTIONS.Train_SCV_quick.id in obs.observation.available_actions:
+        return FUNCTIONS.Train_SCV_quick("now")
+      else:
+        if numpy.random.rand(1) <0.5:
+          cd_center_xy = [ [unit.x, unit.y] for unit in obs.observation.feature_units if unit.unit_type == units.Terran.CommandCenter]
+          return FUNCTIONS.select_point("select", cd_center_xy[0])
+
     if FUNCTIONS.Build_Refinery_screen.id in obs.observation.available_actions:
       # Select scv
       if not (self.select_scv and scv):
@@ -183,10 +197,7 @@ class CollectMineralsAndGas(base_agent.BaseAgent):
             self.select_scv = True
             return FUNCTIONS.select_point("select", [unit.x,unit.y])
       
-      refinery_count = 0 # Count the refineries
-      for unit in obs.observation.feature_units:
-        if unit.unit_type == units.Terran.Refinery:
-          refinery_count += 1
+      
       # When refineries are full
       if refinery_count == len(gas_xy):
         # Send SCV to refinery
