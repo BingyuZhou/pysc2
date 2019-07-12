@@ -156,6 +156,10 @@ class CollectMineralsAndGas(base_agent.BaseAgent):
     self.select_scv = False
     self.gas_list = []
 
+  def find_supplydepot(self, minerals):
+    pass
+
+
   def step(self, obs):
     super().step(obs)
 
@@ -170,13 +174,16 @@ class CollectMineralsAndGas(base_agent.BaseAgent):
         refinery_count += 1
 
     if refinery_count > 0:
-      
-      if FUNCTIONS.Train_SCV_quick.id in obs.observation.available_actions:
-        return FUNCTIONS.Train_SCV_quick("now")
+      if (obs.observation.player.food_used < obs.observation.player.food_cap):
+        if (FUNCTIONS.Train_SCV_quick.id in obs.observation.available_actions):
+          return FUNCTIONS.Train_SCV_quick("now")
+        else:
+          if numpy.random.rand(1) <0.5:
+            cd_center_xy = [ [unit.x, unit.y] for unit in obs.observation.feature_units if unit.unit_type == units.Terran.CommandCenter]
+            return FUNCTIONS.select_point("select", cd_center_xy[0])
       else:
-        if numpy.random.rand(1) <0.5:
-          cd_center_xy = [ [unit.x, unit.y] for unit in obs.observation.feature_units if unit.unit_type == units.Terran.CommandCenter]
-          return FUNCTIONS.select_point("select", cd_center_xy[0])
+        supply_xy = self.find_supplydepot(minerals_xy)
+        return FUNCTIONS.Build_SupplyDepot_screen("queued", supply_xy)
 
     if FUNCTIONS.Build_Refinery_screen.id in obs.observation.available_actions:
       # Select scv
@@ -223,7 +230,7 @@ class CollectMineralsAndGas(base_agent.BaseAgent):
    
     if FUNCTIONS.Harvest_Gather_screen.id in obs.observation.available_actions:
       self.select_scv = False
-      print("harv mineral")
+      print("harvest mineral")
       return FUNCTIONS.Harvest_Gather_screen("now", minerals_xy[0])
 
     print("no op")
