@@ -1,0 +1,17 @@
+from pysc2.env import sc2_env
+
+
+class SC2EnvWrapper(sc2_env.SC2Env):
+    def __init__(self, map_name, players, agent_interface_format, step_mul,
+                 game_steps_per_episode, disable_fog):
+        super(SC2EnvWrapper,
+              self).__init__(map_name=map_name,
+                             players=players,
+                             agent_interface_format=agent_interface_format,
+                             step_mul=step_mul,
+                             game_steps_per_episode=game_steps_per_episode,
+                             disable_fog=disable_fog,
+                             visualize=False)
+
+    def render(self, render_on):
+        self._renderer_human = render_on
