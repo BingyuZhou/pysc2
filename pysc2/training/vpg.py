@@ -41,16 +41,82 @@ flags.DEFINE_bool("disable_fog", False, "Whether to disable Fog of War.")
 class Actor_Critic(keras.Model):
     def __init__(self):
         super(Actor_Critic, self).__init__()
+        # upgrades
+        self.embed_upgrads = keras.layers.Dense(64, activation=tf.tanh)
+        # player (agent statistics)
+        self.embed_player = keras.layers.Dense(64, activation=tf.nn.relu)
+        # available_actions
+        self.embed_available_act = keras.layers.Dense(64,
+                                                      activation=tf.nn.relu)
+        # race_requested
+        self.embed_race = keras.layers.Dense(64, activation=tf.nn.relu)
+        #
+        self.embed_available_act = keras.layers.Dense(64,
+                                                      activation=tf.nn.relu)
+        self.embed_available_act = keras.layers.Dense(64,
+                                                      activation=tf.nn.relu)
+        self.embed_available_act = keras.layers.Dense(64,
+                                                      activation=tf.nn.relu)
+        self.embed_available_act = keras.layers.Dense(64,
+                                                      activation=tf.nn.relu)
 
-        pass
+        self.embed_minimap = keras.layers.Conv2D(32,
+                                                 1,
+                                                 padding='same',
+                                                 activation=tf.nn.relu)
+        self.embed_minimap_2 = keras.layers.Conv2D(64,
+                                                   3,
+                                                   padding='same',
+                                                   activation=tf.nn.relu)
+        self.embed_minimap_3 = keras.layers.Conv2D(128,
+                                                   3,
+                                                   padding='same',
+                                                   activation=tf.nn.relu)
 
     # action distribution
     def call(self, obs):
-        x = self.layer1(obs)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        logp = tf.nn.log_softmax(x)
-        return logp
+        """Embedding of inputs"""
+        """ 
+        Scalar features
+        
+        These are embedding of scalar features
+        """
+        embed_player = self.embed_player(np.log(obs.player + 1))
+        embed_race = self.embed_race(
+            tf.one_hot([obs.home_race_requested, obs.away_race_requested], 5))
+        #FIXME: boolen vector of upgrades
+        embed_upgrades = self.embed_upgrads(obs.upgrades)
+
+        available_act_bool_vec = np.zeros(NUM_ACTION_FUNCTIONS,
+                                          dtype=np.float32)
+        available_act_bool_vec[obs.available_actions] = 1
+        embed_available_act = self.embed_available_act(available_act_bool_vec)
+
+        scalar_out = tf.concat(
+            [embed_player, embed_race, embed_upgrades, embed_available_act],
+            axis=1)
+        """ 
+        Map features 
+        
+        These are embedding of map features
+        """
+        embed_minimap = self.embed_minimap(obs.feature_minimap)
+        embed_minimap = self.embed_minimap_2(embed_minimap)
+        embed_minimap = self.embed_minimap_3(embed_minimap)
+        embed_screen = self.embed_minimap(obs.feature_screen)
+        embed_screen = self.embed_minimap_2(embed_screen)
+        embed_screen = self.embed_minimap_3(embed_screen)
+
+        map_out = tf.concat([embed_minimap, embed_screen], axis=3)
+
+        #TODO: entities feature
+        """State representation"""
+        # core
+        scalar_out_2d = tf.tile(
+            tf.expand_dims(tf.expand_dims(scalar_out, 1), 2),
+            [1, map_out.shape[1], map_out.shape[2], 1])
+        core_out = tf.concat([scalar_out_2d, map_out], axis=3)
+        """Decision output"""
 
     # action sampling
     def sample(self, obs):
@@ -102,7 +168,7 @@ def train(env_name, batch_size, epochs):
             act = actor_critic.sample(obs)
 
             batch_act.append(act)
-            batch_obs.append(obs.copy())
+            batch_obs.append(obs)
 
             timeStepTuple = env.step(act)
             step_type, reward, discount, obs = timeStepTuple[0]
