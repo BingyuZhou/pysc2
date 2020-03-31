@@ -72,10 +72,22 @@ class Actor_Critic(keras.Model):
                                                    3,
                                                    padding='same',
                                                    activation=tf.nn.relu)
+        """
+        Output
+        """
+        #TODO: autoregressive embedding
+        self.action_id_logits = keras.layers.Dense(NUM_ACTION_FUNCTIONS)
+        self.delay_logits = keras.layers.Dense(128)
+        self.queued_logits = keras.layers.Dense(2)
+        self.selected_units_logits = keras.layers.Dense(64)
+        self.target_unit_logits = keras.layers.Dense(32)
+        self.target_location_logits = keras.layers.Conv2D(1, 1, padding='same')
 
     # action distribution
     def call(self, obs):
-        """Embedding of inputs"""
+        """
+        Embedding of inputs
+        """
         """ 
         Scalar features
         
@@ -110,17 +122,67 @@ class Actor_Critic(keras.Model):
         map_out = tf.concat([embed_minimap, embed_screen], axis=3)
 
         #TODO: entities feature
-        """State representation"""
+        """
+        State representation
+        """
         # core
         scalar_out_2d = tf.tile(
             tf.expand_dims(tf.expand_dims(scalar_out, 1), 2),
             [1, map_out.shape[1], map_out.shape[2], 1])
         core_out = tf.concat([scalar_out_2d, map_out], axis=3)
-        """Decision output"""
+        core_out_flat = keras.backend.flatten(core_out)
+        """
+        Decision output
+        """
+        # value
+        value_out = keras.layers.Dense(1)
+        # action id
+        action_id_out = self.action_id_logits(core_out_flat)
+        action_id_out = tf.nn.softmax(action_id_out)
+        # delay
+        delay_out = self.delay_logits(core_out_flat)
+        delay_out = tf.nn.softmax(delay_out)
+
+        # queued
+        queued_out = self.queued_logits(core_out_flat)
+        queued_out = tf.nn.softmax(queued_out)
+        # selected units
+        selected_out = self.selected_units_logits(core_out_flat)
+        selected_out = tf.nn.softmax(selected_out)
+        # target unit
+        target_unit_out = self.target_unit_logits(core_out_flat)
+        target_unit_out = tf.nn.softmax(target_unit_out)
+        # target location
+        target_location_out = self.target_location_logits(core_out)
+        target_location_out = keras.backend.flatten(target_location_out)
+        target_location_out = tf.nn.softmax(target_location_out)
+
+        out = {
+            'value': value_out,
+            'action_id': action_id_out,
+            'delay': delay_out,
+            'queued': queued_out,
+            'selected': selected_out,
+            'target_unit': target_unit_out,
+            'target_location': target_location_out
+        }
+
+        return out
 
     # action sampling
-    def sample(self, obs):
-        return tf.squeeze(tf.random.categorical(self.call(obs), 1), axis=1)
+    def step(self, obs):
+        """Sample actions and compute logp(a|s)"""
+        out = self.call(obs)
+
+        available_act_mask = np.zeros(NUM_ACTION_FUNCTIONS, dtype=np.float32)
+        available_act_mask[obs.available_actions] = 1
+        out['action_id'] *= available_act_mask
+
+        action_id = tf.random.categorical(out['action_id'], 1)
+
+        #TODO: Fill out args based on sampled action type
+        for arg_type in obs.
+
 
     def loss(self, obs, act, ret):
         # expection grad log
@@ -151,6 +213,7 @@ def train(env_name, batch_size, epochs):
         batch_act = []  # batch action
         batch_ret = []  # batch return
         batch_len = []  # batch trajectory length
+        batch_logp = []  # batch logp(a|s)
         ep_rew = []  # episode rewards (trajectory rewards)
         ep_len = 0  # length of trajectory
 
