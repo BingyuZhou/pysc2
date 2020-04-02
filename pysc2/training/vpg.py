@@ -11,7 +11,7 @@ import datetime
 from absl import app, flags
 
 from pysc2.env import sc2_env
-from pysc2.lib import actions
+from pysc2.lib import actions, features
 from sc2env_wrapper import SC2EnvWrapper
 
 tf.keras.backend.set_floatx('float32')
@@ -50,16 +50,7 @@ class Actor_Critic(keras.Model):
                                                       activation=tf.nn.relu)
         # race_requested
         self.embed_race = keras.layers.Dense(64, activation=tf.nn.relu)
-        #
-        self.embed_available_act = keras.layers.Dense(64,
-                                                      activation=tf.nn.relu)
-        self.embed_available_act = keras.layers.Dense(64,
-                                                      activation=tf.nn.relu)
-        self.embed_available_act = keras.layers.Dense(64,
-                                                      activation=tf.nn.relu)
-        self.embed_available_act = keras.layers.Dense(64,
-                                                      activation=tf.nn.relu)
-
+        # minimap feature
         self.embed_minimap = keras.layers.Conv2D(32,
                                                  1,
                                                  padding='same',
@@ -72,6 +63,21 @@ class Actor_Critic(keras.Model):
                                                    3,
                                                    padding='same',
                                                    activation=tf.nn.relu)
+        # screen feature
+        self.embed_screen = keras.layers.Conv2D(32,
+                                                1,
+                                                padding='same',
+                                                activation=tf.nn.relu)
+        self.embed_screen_2 = keras.layers.Conv2D(64,
+                                                  3,
+                                                  padding='same',
+                                                  activation=tf.nn.relu)
+        self.embed_screen_3 = keras.layers.Conv2D(128,
+                                                  3,
+                                                  padding='same',
+                                                  activation=tf.nn.relu)
+        # core
+        self.flat = keras.layers.Flatten()
         """
         Output
         """
@@ -79,7 +85,11 @@ class Actor_Critic(keras.Model):
         self.action_id_logits = keras.layers.Dense(NUM_ACTION_FUNCTIONS)
         self.delay_logits = keras.layers.Dense(128)
         self.queued_logits = keras.layers.Dense(2)
-        self.selected_units_logits = keras.layers.Dense(64)
+        self.select_point_logits = keras.layers.Dense(4)
+        self.select_add_logits = keras.layers.Dense(2)
+        # self.select_unit_act=keras.layers.Dense(4)
+        # self.selec_unit_id_logits=keras.layers.Dense(64)
+        self.select_worker_logits = keras.layers.Dense(4)
         self.target_unit_logits = keras.layers.Dense(32)
         self.target_location_logits = keras.layers.Conv2D(1, 1, padding='same')
 
@@ -93,33 +103,67 @@ class Actor_Critic(keras.Model):
         
         These are embedding of scalar features
         """
-        embed_player = self.embed_player(np.log(obs.player + 1))
+        embed_player = self.embed_player(
+            np.log(np.expand_dims(obs.player, axis=0) + 1))
         embed_race = self.embed_race(
-            tf.one_hot([obs.home_race_requested, obs.away_race_requested], 5))
-        #FIXME: boolen vector of upgrades
-        embed_upgrades = self.embed_upgrads(obs.upgrades)
+            tf.one_hot(
+                [obs.home_race_requested[0], obs.away_race_requested[0]],
+                depth=4))
+        #FIXME: boolen vector of upgrades, size is unknown
+        upgrades_bool_vec = np.zeros(20, dtype=np.float32)
+        upgrades_bool_vec[obs.upgrades] = 1.
+        embed_upgrades = self.embed_upgrads(
+            np.expand_dims(upgrades_bool_vec, axis=0))
 
         available_act_bool_vec = np.zeros(NUM_ACTION_FUNCTIONS,
                                           dtype=np.float32)
         available_act_bool_vec[obs.available_actions] = 1
-        embed_available_act = self.embed_available_act(available_act_bool_vec)
+        embed_available_act = self.embed_available_act(
+            np.expand_dims(available_act_bool_vec, axis=0))
 
-        scalar_out = tf.concat(
-            [embed_player, embed_race, embed_upgrades, embed_available_act],
-            axis=1)
+        scalar_out = tf.concat([
+            embed_player,
+            tf.reshape(embed_race, [1, -1]), embed_upgrades,
+            embed_available_act
+        ],
+                               axis=1)
+        print("scalar_out: {}".format(scalar_out.shape))
         """ 
         Map features 
         
         These are embedding of map features
         """
-        embed_minimap = self.embed_minimap(obs.feature_minimap)
-        embed_minimap = self.embed_minimap_2(embed_minimap)
-        embed_minimap = self.embed_minimap_3(embed_minimap)
-        embed_screen = self.embed_minimap(obs.feature_screen)
-        embed_screen = self.embed_minimap_2(embed_screen)
-        embed_screen = self.embed_minimap_3(embed_screen)
+        def preprocess_map(obs, screen_on=False):
+            if screen_on:
+                Features = features.SCREEN_FEATURES
+            else:
+                Features = features.MINIMAP_FEATURES
+            out = []
+            for feature in Features:
+                if feature.type is features.FeatureType.CATEGORICAL:
+                    one_hot = tf.one_hot(np.expand_dims(obs[feature.name],
+                                                        axis=0),
+                                         depth=feature.scale)
+                else:  # features.FeatureType.SCALAR
+                    one_hot = np.expand_dims(np.expand_dims(obs[feature.name] /
+                                                            255.0,
+                                                            axis=0),
+                                             axis=-1)
+                out.append(one_hot)
+            out = tf.concat(out, axis=-1)
+            return out
 
-        map_out = tf.concat([embed_minimap, embed_screen], axis=3)
+        one_hot_minimap = preprocess_map(obs.feature_minimap)
+        embed_minimap = self.embed_minimap(one_hot_minimap)
+        # embed_minimap = self.embed_minimap_2(embed_minimap)
+        # embed_minimap = self.embed_minimap_3(embed_minimap)
+
+        one_hot_screen = preprocess_map(obs.feature_screen, screen_on=True)
+        embed_screen = self.embed_screen(one_hot_screen)
+        # embed_screen = self.embed_screen_2(embed_screen)
+        # embed_screen = self.embed_screen_3(embed_screen)
+        map_out = tf.concat([embed_minimap, embed_screen], axis=-1)
+        print("map_out: {}".format(map_out.shape))
 
         #TODO: entities feature
         """
@@ -130,7 +174,7 @@ class Actor_Critic(keras.Model):
             tf.expand_dims(tf.expand_dims(scalar_out, 1), 2),
             [1, map_out.shape[1], map_out.shape[2], 1])
         core_out = tf.concat([scalar_out_2d, map_out], axis=3)
-        core_out_flat = keras.backend.flatten(core_out)
+        core_out_flat = self.flat(core_out)
         """
         Decision output
         """
@@ -138,31 +182,41 @@ class Actor_Critic(keras.Model):
         value_out = keras.layers.Dense(1)
         # action id
         action_id_out = self.action_id_logits(core_out_flat)
-        action_id_out = tf.nn.softmax(action_id_out)
+        action_id_out = tf.nn.log_softmax(action_id_out)
         # delay
         delay_out = self.delay_logits(core_out_flat)
-        delay_out = tf.nn.softmax(delay_out)
+        delay_out = tf.nn.log_softmax(delay_out)
 
         # queued
         queued_out = self.queued_logits(core_out_flat)
-        queued_out = tf.nn.softmax(queued_out)
+        queued_out = tf.nn.log_softmax(queued_out)
         # selected units
-        selected_out = self.selected_units_logits(core_out_flat)
-        selected_out = tf.nn.softmax(selected_out)
+        select_point_out = self.select_point_logits(core_out_flat)
+        select_point_out = tf.nn.log_softmax(select_point_out)
+
+        select_add_out = self.select_add_logits(core_out_flat)
+        select_add_out = tf.nn.log_softmax(select_add_out)
+
+        select_worker_out = self.select_worker_logits(core_out_flat)
+        select_worker_out = tf.nn.log_softmax(select_worker_out)
         # target unit
         target_unit_out = self.target_unit_logits(core_out_flat)
-        target_unit_out = tf.nn.softmax(target_unit_out)
+        target_unit_out = tf.nn.log_softmax(target_unit_out)
         # target location
         target_location_out = self.target_location_logits(core_out)
+        self.location_out_width, self.location_out_height = target_location_out.shape
+
         target_location_out = keras.backend.flatten(target_location_out)
-        target_location_out = tf.nn.softmax(target_location_out)
+        target_location_out = tf.nn.log_softmax(target_location_out)
 
         out = {
             'value': value_out,
             'action_id': action_id_out,
             'delay': delay_out,
             'queued': queued_out,
-            'selected': selected_out,
+            'select_point': select_point_out,
+            'select_add': select_add_out,
+            'select_worker': select_worker_out,
             'target_unit': target_unit_out,
             'target_location': target_location_out
         }
@@ -170,7 +224,7 @@ class Actor_Critic(keras.Model):
         return out
 
     # action sampling
-    def step(self, obs):
+    def step(self, obs, action_spec):
         """Sample actions and compute logp(a|s)"""
         out = self.call(obs)
 
@@ -180,9 +234,28 @@ class Actor_Critic(keras.Model):
 
         action_id = tf.random.categorical(out['action_id'], 1)
 
-        #TODO: Fill out args based on sampled action type
-        for arg_type in obs.
+        # Fill out args based on sampled action type
+        args_out = []
+        logp_a = out['action_id'] * tf.one_hot(
+            action_id, depth=len(obs.available_actions))
 
+        for arg_type in action_spec.functions[action_id].args:
+            if arg_type.name in ['screen', 'minimap']:
+                location_id = tf.random.categorical(out['target_location'], 1)
+                x, y = location_id % self.location_out_width, location_id // self.location_out_width
+                args_out.append([x, y])
+
+                logp_a += out['target_location'] * tf.one_hot(
+                    location_id,
+                    depth=self.location_out_width * self.location_out_height)
+            else:
+                # non-spatial args
+                sample = tf.random.categorical(out[arg_type.name], 1)
+                args_out.append(sample)
+                logp_a += out[arg_type.name] * tf.one_hot(
+                    sample, depth=actions.TYPES[arg_type.name].sizes)
+
+        return out['value'], action_id, args_out, logp_a
 
     def loss(self, obs, act, ret):
         # expection grad log
@@ -202,10 +275,12 @@ def train(env_name, batch_size, epochs):
         map_name=env_name,
         players=[sc2_env.Agent(sc2_env.Race.random)],
         agent_interface_format=sc2_env.parse_agent_interface_format(
-            feature_screen=64, feature_minimap=64),
+            feature_minimap=64, feature_screen=64),
         step_mul=FLAGS.step_mul,
         game_steps_per_episode=FLAGS.game_steps_per_episode,
         disable_fog=FLAGS.disable_fog)
+
+    action_spec = env.action_spec()[0]  # assume one agent
 
     def train_one_epoch():
         # initialize replay buffer
@@ -228,12 +303,13 @@ def train(env_name, batch_size, epochs):
         while True:
             env.render(render_env)
 
-            act = actor_critic.sample(obs)
+            v, act_id, act_args, logp_a = actor_critic.step(obs, action_spec)
 
-            batch_act.append(act)
+            batch_act.append([act_id, act_args])
             batch_obs.append(obs)
+            batch_logp.append(logp_a)
 
-            timeStepTuple = env.step(act)
+            timeStepTuple = env.step(actions.FunctionCall(act_id, act_args))
             step_type, reward, discount, obs = timeStepTuple[0]
 
             ep_rew.append(reward)
