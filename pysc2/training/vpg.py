@@ -64,18 +64,18 @@ class Actor_Critic(keras.Model):
                                                    padding='same',
                                                    activation=tf.nn.relu)
         # screen feature
-        self.embed_screen = keras.layers.Conv2D(32,
-                                                1,
-                                                padding='same',
-                                                activation=tf.nn.relu)
-        self.embed_screen_2 = keras.layers.Conv2D(64,
-                                                  3,
-                                                  padding='same',
-                                                  activation=tf.nn.relu)
-        self.embed_screen_3 = keras.layers.Conv2D(128,
-                                                  3,
-                                                  padding='same',
-                                                  activation=tf.nn.relu)
+        # self.embed_screen = keras.layers.Conv2D(32,
+        #                                         1,
+        #                                         padding='same',
+        #                                         activation=tf.nn.relu)
+        # self.embed_screen_2 = keras.layers.Conv2D(64,
+        #                                           3,
+        #                                           padding='same',
+        #                                           activation=tf.nn.relu)
+        # self.embed_screen_3 = keras.layers.Conv2D(128,
+        #                                           3,
+        #                                           padding='same',
+        #                                           activation=tf.nn.relu)
         # core
         self.flat = keras.layers.Flatten()
         """
@@ -91,6 +91,7 @@ class Actor_Critic(keras.Model):
         # self.selec_unit_id_logits=keras.layers.Dense(64)
         self.select_worker_logits = keras.layers.Dense(4)
         self.target_unit_logits = keras.layers.Dense(32)
+        self.target_location_flat = keras.layers.Flatten()
         self.target_location_logits = keras.layers.Conv2D(1, 1, padding='same')
 
     # action distribution
@@ -158,11 +159,12 @@ class Actor_Critic(keras.Model):
         # embed_minimap = self.embed_minimap_2(embed_minimap)
         # embed_minimap = self.embed_minimap_3(embed_minimap)
 
-        one_hot_screen = preprocess_map(obs.feature_screen, screen_on=True)
-        embed_screen = self.embed_screen(one_hot_screen)
+        # one_hot_screen = preprocess_map(obs.feature_screen, screen_on=True)
+        # embed_screen = self.embed_screen(one_hot_screen)
         # embed_screen = self.embed_screen_2(embed_screen)
         # embed_screen = self.embed_screen_3(embed_screen)
-        map_out = tf.concat([embed_minimap, embed_screen], axis=-1)
+        # map_out = tf.concat([embed_minimap, embed_screen], axis=-1)
+        map_out = embed_minimap
         print("map_out: {}".format(map_out.shape))
 
         #TODO: entities feature
@@ -204,9 +206,9 @@ class Actor_Critic(keras.Model):
         target_unit_out = tf.nn.log_softmax(target_unit_out)
         # target location
         target_location_out = self.target_location_logits(core_out)
-        self.location_out_width, self.location_out_height = target_location_out.shape
+        _, self.location_out_width, self.location_out_height, _ = target_location_out.shape
 
-        target_location_out = keras.backend.flatten(target_location_out)
+        target_location_out = self.target_location_flat(target_location_out)
         target_location_out = tf.nn.log_softmax(target_location_out)
 
         out = {
@@ -232,28 +234,35 @@ class Actor_Critic(keras.Model):
         available_act_mask[obs.available_actions] = 1
         out['action_id'] *= available_act_mask
 
-        action_id = tf.random.categorical(out['action_id'], 1)
+        action_id = tf.random.categorical(out['action_id'], 1).numpy().item()
 
         # Fill out args based on sampled action type
         args_out = []
-        logp_a = out['action_id'] * tf.one_hot(
-            action_id, depth=len(obs.available_actions))
+        logp_a = tf.reduce_sum(
+            out['action_id'] *
+            tf.one_hot(action_id, depth=NUM_ACTION_FUNCTIONS),
+            axis=-1)
 
         for arg_type in action_spec.functions[action_id].args:
             if arg_type.name in ['screen', 'minimap']:
-                location_id = tf.random.categorical(out['target_location'], 1)
+                location_id = tf.random.categorical(out['target_location'],
+                                                    1).numpy().item()
                 x, y = location_id % self.location_out_width, location_id // self.location_out_width
                 args_out.append([x, y])
 
-                logp_a += out['target_location'] * tf.one_hot(
+                logp_a += tf.reduce_sum(out['target_location'] * tf.one_hot(
                     location_id,
-                    depth=self.location_out_width * self.location_out_height)
+                    depth=self.location_out_width * self.location_out_height),
+                                        axis=-1)
             else:
                 # non-spatial args
-                sample = tf.random.categorical(out[arg_type.name], 1)
+                sample = tf.random.categorical(out[arg_type.name],
+                                               1).numpy().item()
                 args_out.append(sample)
-                logp_a += out[arg_type.name] * tf.one_hot(
-                    sample, depth=actions.TYPES[arg_type.name].sizes)
+                logp_a += tf.reduce_sum(
+                    out[arg_type.name] *
+                    tf.one_hot(sample, depth=arg_type.sizes[0]),
+                    axis=-1)
 
         return out['value'], action_id, args_out, logp_a
 
@@ -275,7 +284,7 @@ def train(env_name, batch_size, epochs):
         map_name=env_name,
         players=[sc2_env.Agent(sc2_env.Race.random)],
         agent_interface_format=sc2_env.parse_agent_interface_format(
-            feature_minimap=64, feature_screen=64),
+            feature_minimap=32, feature_screen=1),
         step_mul=FLAGS.step_mul,
         game_steps_per_episode=FLAGS.game_steps_per_episode,
         disable_fog=FLAGS.disable_fog)
@@ -303,13 +312,16 @@ def train(env_name, batch_size, epochs):
         while True:
             env.render(render_env)
 
+            print("computing action ...")
             v, act_id, act_args, logp_a = actor_critic.step(obs, action_spec)
 
+            print("logging ...")
             batch_act.append([act_id, act_args])
             batch_obs.append(obs)
             batch_logp.append(logp_a)
 
-            timeStepTuple = env.step(actions.FunctionCall(act_id, act_args))
+            print("apply action in env ...")
+            timeStepTuple = env.step([actions.FunctionCall(act_id, act_args)])
             step_type, reward, discount, obs = timeStepTuple[0]
 
             ep_rew.append(reward)
