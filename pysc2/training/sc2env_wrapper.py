@@ -15,7 +15,8 @@ class SC2EnvWrapper(sc2_env.SC2Env):
                              visualize=False)
 
     def render(self, render_on):
-        self._renderer_human = render_on
+        if not render_on:
+            self._renderer_human = None
 
     @staticmethod
     def preprocess_obs(obs):

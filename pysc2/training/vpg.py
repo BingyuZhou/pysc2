@@ -38,9 +38,25 @@ flags.DEFINE_integer("game_steps_per_episode", None, "Game steps per episode.")
 flags.DEFINE_bool("disable_fog", False, "Whether to disable Fog of War.")
 
 
+class GLU(keras.Model):
+    """Gated linear unit"""
+    def __init__(self, input_size, out_size):
+        super(GLU, self).__init__(name='GLU')
+        self.input_size = input_size
+        self.out_size = out_size
+        self.layer1 = keras.layers.Dense(input_size, activation='sigmoid')
+        self.layer2 = keras.layers.Dense(out_size)
+
+    def call(self, input, context):
+        x = self.layer1(context)  # gate
+        x = x * input  # gated input
+        x = self.layer2(x)
+        return x
+
+
 class Actor_Critic(keras.Model):
     def __init__(self):
-        super(Actor_Critic, self).__init__()
+        super(Actor_Critic, self).__init__(name='ActorCritic')
         # upgrades
         self.embed_upgrads = keras.layers.Dense(64, activation='tanh')
         # player (agent statistics)
@@ -80,8 +96,11 @@ class Actor_Critic(keras.Model):
         """
         Output
         """
+
         #TODO: autoregressive embedding
-        self.action_id_logits = keras.layers.Dense(NUM_ACTION_FUNCTIONS)
+        self.action_id_layer = keras.layers.Dense(256)
+        self.action_id_gate = GLU(input_size=256,
+                                  out_size=NUM_ACTION_FUNCTIONS)
         self.delay_logits = keras.layers.Dense(128)
         self.queued_logits = keras.layers.Dense(2)
         self.select_point_logits = keras.layers.Dense(4)
@@ -182,40 +201,33 @@ class Actor_Critic(keras.Model):
         # value
         value_out = keras.layers.Dense(1)
         # action id
-        action_id_out = self.action_id_logits(core_out_flat)
-        action_id_out = tf.nn.log_softmax(action_id_out)
+        action_id_out = self.action_id_layer(core_out_flat)
+        action_id_out = self.action_id_gate(action_id_out, embed_available_act)
         # delay
         delay_out = self.delay_logits(core_out_flat)
-        delay_out = tf.nn.log_softmax(delay_out)
 
         # queued
         queued_out = self.queued_logits(core_out_flat)
-        queued_out = tf.nn.log_softmax(queued_out)
         # selected units
         select_point_out = self.select_point_logits(core_out_flat)
-        select_point_out = tf.nn.log_softmax(select_point_out)
 
         select_add_out = self.select_add_logits(core_out_flat)
-        select_add_out = tf.nn.log_softmax(select_add_out)
 
         select_worker_out = self.select_worker_logits(core_out_flat)
-        select_worker_out = tf.nn.log_softmax(select_worker_out)
         # target unit
         target_unit_out = self.target_unit_logits(core_out_flat)
-        target_unit_out = tf.nn.log_softmax(target_unit_out)
         # target location
         target_location_out = self.target_location_logits(core_out)
         _, self.location_out_width, self.location_out_height, _ = target_location_out.shape
 
         target_location_out = self.target_location_flat(target_location_out)
-        target_location_out = tf.nn.log_softmax(target_location_out)
 
         out = {
             'value': value_out,
             'action_id': action_id_out,
             'delay': delay_out,
             'queued': queued_out,
-            'select_point': select_point_out,
+            'select_point_act': select_point_out,
             'select_add': select_add_out,
             'select_worker': select_worker_out,
             'target_unit': target_unit_out,
@@ -230,8 +242,12 @@ class Actor_Critic(keras.Model):
         out = self.call(obs)
 
         available_act_mask = np.zeros(NUM_ACTION_FUNCTIONS, dtype=np.float32)
-        available_act_mask[obs.available_actions] = 1
-        out['action_id'] *= available_act_mask
+        available_act_mask[obs.available_actions] = 1.0
+        # HACK: intentionally turn off control group, select_unit !!
+        available_act_mask[[4, 5]] = 0
+        out['action_id'] = tf.math.softmax(
+            out['action_id']) * available_act_mask
+        out['action_id'] = tf.math.log(out['action_id'])
 
         action_id = tf.random.categorical(out['action_id'], 1).numpy().item()
 
@@ -243,7 +259,7 @@ class Actor_Critic(keras.Model):
             axis=-1)
 
         for arg_type in action_spec.functions[action_id].args:
-            if arg_type.name in ['screen', 'minimap']:
+            if arg_type.name in ['screen', 'screen2', 'minimap']:
                 location_id = tf.random.categorical(out['target_location'],
                                                     1).numpy().item()
                 x, y = location_id % self.location_out_width, location_id // self.location_out_width
@@ -257,7 +273,7 @@ class Actor_Critic(keras.Model):
                 # non-spatial args
                 sample = tf.random.categorical(out[arg_type.name],
                                                1).numpy().item()
-                args_out.append(sample)
+                args_out.append([sample])
                 logp_a += tf.reduce_sum(
                     out[arg_type.name] *
                     tf.one_hot(sample, depth=arg_type.sizes[0]),
@@ -276,7 +292,6 @@ class Actor_Critic(keras.Model):
 # run one policy update
 def train(env_name, batch_size, epochs):
     actor_critic = Actor_Critic()
-    actor_critic.summary()
 
     optimizer = keras.optimizers.Adam()
     # set env
@@ -334,12 +349,12 @@ def train(env_name, batch_size, epochs):
                 batch_len.append(ep_len)
 
                 # respawn env
-                obs = env.reset()
+                _, _, _, obs = env.reset()[0]
                 ep_len = 0
                 ep_rew.clear()
 
                 # stop render
-                render_env = False
+                render_env = True
 
                 if len(batch_obs) > batch_size:
                     break
