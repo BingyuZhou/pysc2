@@ -42,27 +42,26 @@ class Actor_Critic(keras.Model):
     def __init__(self):
         super(Actor_Critic, self).__init__()
         # upgrades
-        self.embed_upgrads = keras.layers.Dense(64, activation=tf.tanh)
+        self.embed_upgrads = keras.layers.Dense(64, activation='tanh')
         # player (agent statistics)
-        self.embed_player = keras.layers.Dense(64, activation=tf.nn.relu)
+        self.embed_player = keras.layers.Dense(64, activation='relu')
         # available_actions
-        self.embed_available_act = keras.layers.Dense(64,
-                                                      activation=tf.nn.relu)
+        self.embed_available_act = keras.layers.Dense(64, activation='relu')
         # race_requested
-        self.embed_race = keras.layers.Dense(64, activation=tf.nn.relu)
+        self.embed_race = keras.layers.Dense(64, activation='relu')
         # minimap feature
         self.embed_minimap = keras.layers.Conv2D(32,
                                                  1,
                                                  padding='same',
-                                                 activation=tf.nn.relu)
+                                                 activation="relu")
         self.embed_minimap_2 = keras.layers.Conv2D(64,
                                                    3,
                                                    padding='same',
-                                                   activation=tf.nn.relu)
+                                                   activation='relu')
         self.embed_minimap_3 = keras.layers.Conv2D(128,
                                                    3,
                                                    padding='same',
-                                                   activation=tf.nn.relu)
+                                                   activation='relu')
         # screen feature
         # self.embed_screen = keras.layers.Conv2D(32,
         #                                         1,
@@ -277,6 +276,7 @@ class Actor_Critic(keras.Model):
 # run one policy update
 def train(env_name, batch_size, epochs):
     actor_critic = Actor_Critic()
+    actor_critic.summary()
 
     optimizer = keras.optimizers.Adam()
     # set env
