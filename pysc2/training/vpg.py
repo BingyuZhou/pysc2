@@ -3,6 +3,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from buffer import Buffer
+
 import tensorflow as tf
 from tensorflow import keras
 import tensorboard as tb
@@ -23,6 +25,7 @@ train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 """ constants"""
 NUM_ACTION_FUNCTIONS = 573
+EPS = 1E-8
 
 # args
 FLAGS = flags.FLAGS
@@ -96,7 +99,6 @@ class Actor_Critic(keras.Model):
         """
         Output
         """
-
         #TODO: autoregressive embedding
         self.action_id_layer = keras.layers.Dense(256)
         self.action_id_gate = GLU(input_size=256,
@@ -111,6 +113,8 @@ class Actor_Critic(keras.Model):
         self.target_unit_logits = keras.layers.Dense(32)
         self.target_location_flat = keras.layers.Flatten()
         self.target_location_logits = keras.layers.Conv2D(1, 1, padding='same')
+
+        self.value = keras.layers.Dense(1)
 
     # action distribution
     def call(self, obs):
@@ -146,12 +150,14 @@ class Actor_Critic(keras.Model):
             embed_available_act
         ],
                                axis=1)
-        print("scalar_out: {}".format(scalar_out.shape))
+        # print("scalar_out: {}".format(scalar_out.shape))
         """ 
         Map features 
         
         These are embedding of map features
         """
+
+        # TODO: needs to refactor this function, buffer should record this propcessed obs
         def preprocess_map(obs, screen_on=False):
             if screen_on:
                 Features = features.SCREEN_FEATURES
@@ -183,7 +189,7 @@ class Actor_Critic(keras.Model):
         # embed_screen = self.embed_screen_3(embed_screen)
         # map_out = tf.concat([embed_minimap, embed_screen], axis=-1)
         map_out = embed_minimap
-        print("map_out: {}".format(map_out.shape))
+        # print("map_out: {}".format(map_out.shape))
 
         #TODO: entities feature
         """
@@ -199,7 +205,7 @@ class Actor_Critic(keras.Model):
         Decision output
         """
         # value
-        value_out = keras.layers.Dense(1)
+        value_out = self.value(core_out_flat)
         # action id
         action_id_out = self.action_id_layer(core_out_flat)
         action_id_out = self.action_id_gate(action_id_out, embed_available_act)
@@ -241,12 +247,17 @@ class Actor_Critic(keras.Model):
         """Sample actions and compute logp(a|s)"""
         out = self.call(obs)
 
-        available_act_mask = np.zeros(NUM_ACTION_FUNCTIONS, dtype=np.float32)
+        available_act_mask = np.ones(NUM_ACTION_FUNCTIONS,
+                                     dtype=np.float32) * EPS
         available_act_mask[obs.available_actions] = 1.0
         # HACK: intentionally turn off control group, select_unit !!
-        available_act_mask[[4, 5]] = 0
+        available_act_mask[[4, 5]] = EPS
         out['action_id'] = tf.math.softmax(
             out['action_id']) * available_act_mask
+        # renormalize
+        out['action_id'] /= tf.reduce_sum(out['action_id'],
+                                          axis=-1,
+                                          keepdims=True)
         out['action_id'] = tf.math.log(out['action_id'])
 
         action_id = tf.random.categorical(out['action_id'], 1).numpy().item()
@@ -279,14 +290,39 @@ class Actor_Critic(keras.Model):
                     tf.one_hot(sample, depth=arg_type.sizes[0]),
                     axis=-1)
 
-        return out['value'], action_id, args_out, logp_a
+        return out['value'].numpy().item(), action_id, args_out, logp_a.numpy(
+        ).item()
 
-    def loss(self, obs, act, ret):
+    def logp_a(self, action_id, action_args, pi, action_spec):
+        """logp(a|s)"""
+        logp = tf.reduce_sum(pi['action_id'] *
+                             tf.one_hot(action_id, depth=NUM_ACTION_FUNCTIONS),
+                             axis=-1)
+        # args
+        for ind, arg_type in enumerate(action_spec.functions[action_id].args):
+            if arg_type.name in ['screen', 'screen2', 'minimap']:
+                location_id = action_args[ind][
+                    1] * self.location_out_width + action_args[ind][0]
+                logp += tf.reduce_sum(pi['target_location'] * tf.one_hot(
+                    location_id,
+                    depth=self.location_out_width * self.location_out_height),
+                                      axis=-1)
+            else:
+                # non-spatial args
+                logp += tf.reduce_sum(
+                    pi[arg_type.name] *
+                    tf.one_hot(action_args[ind], depth=arg_type.sizes[0]),
+                    axis=-1)
+
+        return logp
+
+    def loss(self, obs, act_id, act_args, ret, action_spec):
         # expection grad log
-        mask = tf.one_hot(act, depth=self.act_size)
-        logp_a = tf.reduce_sum(self.call(obs) * mask, axis=1)  # logp(a|s)
-        loss = -tf.reduce_mean(logp_a * ret)
-        return loss
+        out = self.call(obs)
+
+        logp = self.logp_a(act_id, act_args, out, action_spec)
+
+        return -tf.reduce_mean(logp * ret)
 
 
 # run one policy update
@@ -295,99 +331,85 @@ def train(env_name, batch_size, epochs):
 
     optimizer = keras.optimizers.Adam()
     # set env
-    env = SC2EnvWrapper(
-        map_name=env_name,
-        players=[sc2_env.Agent(sc2_env.Race.random)],
-        agent_interface_format=sc2_env.parse_agent_interface_format(
-            feature_minimap=32, feature_screen=1),
-        step_mul=FLAGS.step_mul,
-        game_steps_per_episode=FLAGS.game_steps_per_episode,
-        disable_fog=FLAGS.disable_fog)
+    with SC2EnvWrapper(
+            map_name=env_name,
+            players=[sc2_env.Agent(sc2_env.Race.random)],
+            agent_interface_format=sc2_env.parse_agent_interface_format(
+                feature_minimap=32, feature_screen=1),
+            step_mul=FLAGS.step_mul,
+            game_steps_per_episode=FLAGS.game_steps_per_episode,
+            disable_fog=FLAGS.disable_fog) as env:
 
-    action_spec = env.action_spec()[0]  # assume one agent
+        action_spec = env.action_spec()[0]  # assume one agent
 
-    def train_one_epoch():
-        # initialize replay buffer
-        batch_obs = []
-        batch_act = []  # batch action
-        batch_ret = []  # batch return
-        batch_len = []  # batch trajectory length
-        batch_logp = []  # batch logp(a|s)
-        ep_rew = []  # episode rewards (trajectory rewards)
-        ep_len = 0  # length of trajectory
+        def train_one_epoch():
+            # initialize replay buffer
+            buffer = Buffer()
 
-        # initial observation
-        timeStepTuple = env.reset()
-        step_type, reward, discount, obs = timeStepTuple[0]
-
-        # render first episode of each epoch
-        render_env = True
-
-        # fill in recorded trajectories
-        while True:
-            env.render(render_env)
-
-            print("computing action ...")
-            v, act_id, act_args, logp_a = actor_critic.step(obs, action_spec)
-
-            print("logging ...")
-            batch_act.append([act_id, act_args])
-            batch_obs.append(obs)
-            batch_logp.append(logp_a)
-
-            print("apply action in env ...")
-            timeStepTuple = env.step([actions.FunctionCall(act_id, act_args)])
+            # initial observation
+            timeStepTuple = env.reset()
             step_type, reward, discount, obs = timeStepTuple[0]
 
-            ep_rew.append(reward)
-            ep_len += 1
+            # render first episode of each epoch
+            render_env = True
 
-            if step_type == step_type.LAST:
-                # compute return
-                ret = np.sum(ep_rew)
-                batch_ret += [ret] * ep_len
-                batch_len.append(ep_len)
+            # fill in recorded trajectories
+            while True:
+                env.render(render_env)
 
-                # respawn env
-                _, _, _, obs = env.reset()[0]
-                ep_len = 0
-                ep_rew.clear()
+                # print("computing action ...")
+                v, act_id, act_args, logp_a = actor_critic.step(
+                    obs, action_spec)
 
-                # stop render
-                render_env = True
+                # print("buffer logging ...")
+                buffer.add(obs, act_id, act_args, logp_a, reward)
+                # print("apply action in env ...")
+                timeStepTuple = env.step(
+                    [actions.FunctionCall(act_id, act_args)])
+                step_type, reward, discount, obs = timeStepTuple[0]
 
-                if len(batch_obs) > batch_size:
-                    break
+                if step_type == step_type.LAST:
+                    buffer.finalize(reward)
 
-        @tf.function
-        def train_step(obs, act, ret):
-            with tf.GradientTape() as tape:
-                ls = actor_critic.loss(obs, act, ret)
-            grad = tape.gradient(ls, actor_critic.trainable_variables)
-            optimizer.apply_gradients(
-                zip(grad, actor_critic.trainable_variables))
-            return ls
+                    # respawn env
+                    _, _, _, obs = env.reset()[0]
 
-        # update policy
-        batch_loss = train_step(tf.constant(batch_obs), np.array(batch_act),
-                                tf.constant(batch_ret, dtype=tf.float32))
+                    # stop render
+                    render_env = True
 
-        return batch_loss, batch_ret, batch_len
+                    if buffer.size() > batch_size:
+                        break
 
-    for i in range(epochs):
-        batch_loss, batch_ret, batch_len = train_one_epoch()
-        with train_summary_writer.as_default():
-            tf.summary.scalar('batch_ret', np.mean(batch_ret), step=i)
-            tf.summary.scalar('batch_len', np.mean(batch_len), step=i)
+            def train_step(buffer_sample):
+                obs, act_id, act_args, ret = buffer_sample
+                with tf.GradientTape() as tape:
+                    ls = actor_critic.loss(obs, act_id, act_args, ret,
+                                           action_spec)
+                grad = tape.gradient(ls, actor_critic.trainable_variables)
+                optimizer.apply_gradients(
+                    zip(grad, actor_critic.trainable_variables))
+                return ls
 
-        print("epoch {0:2d} loss {1:.3f} batch_ret {2:.3f} batch_len {3:.3f}".
-              format(i, batch_loss.numpy(), np.mean(batch_ret),
-                     np.mean(batch_len)))
+            # update policy
+            batch_loss = train_step(buffer.sample())
+
+            return batch_loss, batch_ret, batch_len
+
+        for i in range(epochs):
+            batch_loss, batch_ret, batch_len = train_one_epoch()
+            with train_summary_writer.as_default():
+                tf.summary.scalar('batch_ret', np.mean(batch_ret), step=i)
+                tf.summary.scalar('batch_len', np.mean(batch_len), step=i)
+
+            print(
+                "epoch {0:2d} loss {1:.3f} batch_ret {2:.3f} batch_len {3:.3f}"
+                .format(i, batch_loss.numpy(), np.mean(batch_ret),
+                        np.mean(batch_len)))
 
 
 def main(argv):
     epochs = 500
-    batch_size = 1000
+    batch_size = 100
     train(FLAGS.env_name, batch_size, epochs)
 
 
