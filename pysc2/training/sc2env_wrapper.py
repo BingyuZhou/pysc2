@@ -12,7 +12,7 @@ class SC2EnvWrapper(sc2_env.SC2Env):
                              step_mul=step_mul,
                              game_steps_per_episode=game_steps_per_episode,
                              disable_fog=disable_fog,
-                             visualize=False)
+                             visualize=True)
 
     def render(self, render_on):
         if not render_on:

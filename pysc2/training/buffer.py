@@ -18,13 +18,10 @@ class Buffer():
         if (self.ep_len == 0):
             # first entry, needs to initialize self.obs
             self.batch_obs = obs.copy()
-            for o in self.batch_obs:
-                self.batch_obs[o] = np.expand_dims(self.batch_obs[o], axis=0)
         else:
             for o in obs:
-                self.batch_obs[o] = np.concatenate(
-                    [np.expand_dims(obs[o], axis=0), self.batch_obs[o]],
-                    axis=0)
+                self.batch_obs[o] = np.concatenate([obs[o], self.batch_obs[o]],
+                                                   axis=0)
         self.batch_act_id.append(act_id)
         self.batch_act_args.append(act_args)
         self.batch_logp.append(logp_a)

@@ -126,23 +126,20 @@ class Actor_Critic(keras.Model):
         
         These are embedding of scalar features
         """
-        embed_player = self.embed_player(
-            np.log(np.expand_dims(obs.player, axis=0) + 1))
+        embed_player = self.embed_player(np.log(obs.player + 1))
         embed_race = self.embed_race(
             tf.one_hot(
                 [obs.home_race_requested[0], obs.away_race_requested[0]],
                 depth=4))
         #FIXME: boolen vector of upgrades, size is unknown
-        upgrades_bool_vec = np.zeros(20, dtype=np.float32)
+        upgrades_bool_vec = np.zeros((1, 20), dtype=np.float32)
         upgrades_bool_vec[obs.upgrades] = 1.
-        embed_upgrades = self.embed_upgrads(
-            np.expand_dims(upgrades_bool_vec, axis=0))
+        embed_upgrades = self.embed_upgrads(upgrades_bool_vec, )
 
-        available_act_bool_vec = np.zeros(NUM_ACTION_FUNCTIONS,
+        available_act_bool_vec = np.zeros((1, NUM_ACTION_FUNCTIONS),
                                           dtype=np.float32)
         available_act_bool_vec[obs.available_actions] = 1
-        embed_available_act = self.embed_available_act(
-            np.expand_dims(available_act_bool_vec, axis=0))
+        embed_available_act = self.embed_available_act(available_act_bool_vec)
 
         scalar_out = tf.concat([
             embed_player,
@@ -156,9 +153,7 @@ class Actor_Critic(keras.Model):
         
         These are embedding of map features
         """
-
-        # TODO: needs to refactor this function, buffer should record this propcessed obs
-        def preprocess_map(obs, screen_on=False):
+        def one_hot_map(obs, screen_on=False):
             if screen_on:
                 Features = features.SCREEN_FEATURES
             else:
@@ -166,24 +161,21 @@ class Actor_Critic(keras.Model):
             out = []
             for feature in Features:
                 if feature.type is features.FeatureType.CATEGORICAL:
-                    one_hot = tf.one_hot(np.expand_dims(obs[feature.name],
-                                                        axis=0),
+                    one_hot = tf.one_hot(obs[feature.name],
                                          depth=feature.scale)
                 else:  # features.FeatureType.SCALAR
-                    one_hot = np.expand_dims(np.expand_dims(obs[feature.name] /
-                                                            255.0,
-                                                            axis=0),
-                                             axis=-1)
+                    one_hot = obs[feature.name] / 255.0
+
                 out.append(one_hot)
             out = tf.concat(out, axis=-1)
             return out
 
-        one_hot_minimap = preprocess_map(obs.feature_minimap)
+        one_hot_minimap = one_hot_map(obs.feature_minimap)
         embed_minimap = self.embed_minimap(one_hot_minimap)
         # embed_minimap = self.embed_minimap_2(embed_minimap)
         # embed_minimap = self.embed_minimap_3(embed_minimap)
 
-        # one_hot_screen = preprocess_map(obs.feature_screen, screen_on=True)
+        # one_hot_screen = one_hot_map(obs.feature_screen, screen_on=True)
         # embed_screen = self.embed_screen(one_hot_screen)
         # embed_screen = self.embed_screen_2(embed_screen)
         # embed_screen = self.embed_screen_3(embed_screen)
@@ -325,6 +317,13 @@ class Actor_Critic(keras.Model):
         return -tf.reduce_mean(logp * ret)
 
 
+def expand_dim(obs):
+    """Expand dimention of observation to meet requirements of NN"""
+    for o in obs:
+        obs[o] = np.expand_dims(obs[o], axis=0)
+    return obs
+
+
 # run one policy update
 def train(env_name, batch_size, epochs):
     actor_critic = Actor_Critic()
@@ -349,7 +348,7 @@ def train(env_name, batch_size, epochs):
             # initial observation
             timeStepTuple = env.reset()
             step_type, reward, discount, obs = timeStepTuple[0]
-
+            obs = expand_dim(obs)
             # render first episode of each epoch
             render_env = True
 
@@ -367,6 +366,7 @@ def train(env_name, batch_size, epochs):
                 timeStepTuple = env.step(
                     [actions.FunctionCall(act_id, act_args)])
                 step_type, reward, discount, obs = timeStepTuple[0]
+                obs = expand_dim(obs)
 
                 if step_type == step_type.LAST:
                     buffer.finalize(reward)
