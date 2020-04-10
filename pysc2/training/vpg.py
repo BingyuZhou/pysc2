@@ -15,6 +15,7 @@ from absl import app, flags
 from pysc2.env import sc2_env
 from pysc2.lib import actions, features
 from sc2env_wrapper import SC2EnvWrapper
+from pysc2.lib.named_array import NamedNumpyArray
 
 tf.keras.backend.set_floatx('float32')
 """ log info"""
@@ -117,7 +118,7 @@ class Actor_Critic(keras.Model):
         self.value = keras.layers.Dense(1)
 
     # action distribution
-    def call(self, obs):
+    def call(self, obs, batch_size):
         """
         Embedding of inputs
         """
@@ -126,27 +127,30 @@ class Actor_Critic(keras.Model):
         
         These are embedding of scalar features
         """
-        embed_player = self.embed_player(np.log(obs.player + 1))
+        embed_player = self.embed_player(np.log(np.array(obs.player) + 1))
+        # combine both races
+        race = np.concatenate([
+            np.array(obs.home_race_requested),
+            np.array(obs.away_race_requested)
+        ],
+                              axis=1)
+        assert len(race.shape) == 2
         embed_race = self.embed_race(
-            tf.one_hot(
-                [obs.home_race_requested[0], obs.away_race_requested[0]],
-                depth=4))
+            tf.reshape(tf.one_hot(race, depth=4), shape=[-1, 8]))
         #FIXME: boolen vector of upgrades, size is unknown
-        upgrades_bool_vec = np.zeros((1, 20), dtype=np.float32)
-        upgrades_bool_vec[obs.upgrades] = 1.
-        embed_upgrades = self.embed_upgrads(upgrades_bool_vec, )
-
-        available_act_bool_vec = np.zeros((1, NUM_ACTION_FUNCTIONS),
+        upgrades_bool_vec = np.zeros((batch_size, 20), dtype=np.float32)
+        available_act_bool_vec = np.zeros((batch_size, NUM_ACTION_FUNCTIONS),
                                           dtype=np.float32)
-        available_act_bool_vec[obs.available_actions] = 1
+        for i in range(batch_size):
+            upgrades_bool_vec[i, obs.upgrades[i]] = 1
+            available_act_bool_vec[i, obs.available_actions[i]] = 1
+
+        embed_upgrades = self.embed_upgrads(upgrades_bool_vec)
         embed_available_act = self.embed_available_act(available_act_bool_vec)
 
-        scalar_out = tf.concat([
-            embed_player,
-            tf.reshape(embed_race, [1, -1]), embed_upgrades,
-            embed_available_act
-        ],
-                               axis=1)
+        scalar_out = tf.concat(
+            [embed_player, embed_race, embed_upgrades, embed_available_act],
+            axis=1)
         # print("scalar_out: {}".format(scalar_out.shape))
         """ 
         Map features 
@@ -154,23 +158,26 @@ class Actor_Critic(keras.Model):
         These are embedding of map features
         """
         def one_hot_map(obs, screen_on=False):
+            assert len(obs.shape) == 4  # NCWH
+            obs = np.moveaxis(obs, 1, -1)  # NWHC
+
             if screen_on:
                 Features = features.SCREEN_FEATURES
             else:
                 Features = features.MINIMAP_FEATURES
             out = []
-            for feature in Features:
+            for ind, feature in enumerate(Features):
                 if feature.type is features.FeatureType.CATEGORICAL:
-                    one_hot = tf.one_hot(obs[feature.name],
+                    one_hot = tf.one_hot(obs[:, :, :, ind],
                                          depth=feature.scale)
                 else:  # features.FeatureType.SCALAR
-                    one_hot = obs[feature.name] / 255.0
+                    one_hot = obs[:, :, :, ind:] / 255.0
 
                 out.append(one_hot)
             out = tf.concat(out, axis=-1)
             return out
 
-        one_hot_minimap = one_hot_map(obs.feature_minimap)
+        one_hot_minimap = one_hot_map(np.array(obs.feature_minimap))
         embed_minimap = self.embed_minimap(one_hot_minimap)
         # embed_minimap = self.embed_minimap_2(embed_minimap)
         # embed_minimap = self.embed_minimap_3(embed_minimap)
@@ -237,7 +244,7 @@ class Actor_Critic(keras.Model):
     # action sampling
     def step(self, obs, action_spec):
         """Sample actions and compute logp(a|s)"""
-        out = self.call(obs)
+        out = self.call(obs, 1)
 
         available_act_mask = np.ones(NUM_ACTION_FUNCTIONS,
                                      dtype=np.float32) * EPS
@@ -308,9 +315,9 @@ class Actor_Critic(keras.Model):
 
         return logp
 
-    def loss(self, obs, act_id, act_args, ret, action_spec):
+    def loss(self, obs, batch_size, act_id, act_args, ret, action_spec):
         # expection grad log
-        out = self.call(obs)
+        out = self.call(obs, batch_size)
 
         logp = self.logp_a(act_id, act_args, out, action_spec)
 
@@ -320,7 +327,7 @@ class Actor_Critic(keras.Model):
 def expand_dim(obs):
     """Expand dimention of observation to meet requirements of NN"""
     for o in obs:
-        obs[o] = np.expand_dims(obs[o], axis=0)
+        obs[o] = [obs[o]]
     return obs
 
 
@@ -380,18 +387,18 @@ def train(env_name, batch_size, epochs):
                     if buffer.size() > batch_size:
                         break
 
-            def train_step(buffer_sample):
+            def train_step(buffer_sample, batch_size):
                 obs, act_id, act_args, ret = buffer_sample
                 with tf.GradientTape() as tape:
-                    ls = actor_critic.loss(obs, act_id, act_args, ret,
-                                           action_spec)
+                    ls = actor_critic.loss(obs, batch_size, act_id, act_args,
+                                           ret, action_spec)
                 grad = tape.gradient(ls, actor_critic.trainable_variables)
                 optimizer.apply_gradients(
                     zip(grad, actor_critic.trainable_variables))
                 return ls
 
             # update policy
-            batch_loss = train_step(buffer.sample())
+            batch_loss = train_step(buffer.sample(), buffer.size())
 
             return batch_loss, batch_ret, batch_len
 

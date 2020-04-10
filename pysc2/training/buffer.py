@@ -4,7 +4,7 @@ import numpy as np
 class Buffer():
     """Replay buffer"""
     def __init__(self):
-        # self.obs is intentionally not initialized here, since it is NamedDict
+        # self.obs is intentionally not initialized here, since it is Dict
         self.batch_act_id = []  # batch action
         self.batch_act_args = []
         self.batch_ret = []  # batch return
@@ -17,11 +17,10 @@ class Buffer():
         """Add one entry"""
         if (self.ep_len == 0):
             # first entry, needs to initialize self.obs
-            self.batch_obs = obs.copy()
+            self.batch_obs = obs
         else:
             for o in obs:
-                self.batch_obs[o] = np.concatenate([obs[o], self.batch_obs[o]],
-                                                   axis=0)
+                self.batch_obs[o].append(obs[o][0])
         self.batch_act_id.append(act_id)
         self.batch_act_args.append(act_args)
         self.batch_logp.append(logp_a)
