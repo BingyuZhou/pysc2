@@ -292,28 +292,46 @@ class Actor_Critic(keras.Model):
         return out['value'].numpy().item(), action_id, args_out, logp_a.numpy(
         ).item()
 
-    def logp_a(self, action_id, action_args, pi, action_spec):
+    def logp_a(self, action_ids, action_args, pi, action_spec):
         """logp(a|s)"""
-        logp = tf.reduce_sum(pi['action_id'] *
-                             tf.one_hot(action_id, depth=NUM_ACTION_FUNCTIONS),
-                             axis=-1)
-        # args
-        for ind, arg_type in enumerate(action_spec.functions[action_id].args):
-            if arg_type.name in ['screen', 'screen2', 'minimap']:
-                location_id = action_args[ind][
-                    1] * self.location_out_width + action_args[ind][0]
-                logp += tf.reduce_sum(pi['target_location'] * tf.one_hot(
-                    location_id,
-                    depth=self.location_out_width * self.location_out_height),
-                                      axis=-1)
-            else:
-                # non-spatial args
-                logp += tf.reduce_sum(
-                    pi[arg_type.name] *
-                    tf.one_hot(action_args[ind], depth=arg_type.sizes[0]),
-                    axis=-1)
+        # from logits to logp
+        logp_pi = {}
+        for key in pi:
+            if key != 'value':
+                logp_pi[key] = tf.nn.log_softmax(pi[key], axis=-1)
 
-        return logp
+        # action function id prob
+        assert len(pi['action_id'].shape) == 2
+        logp = tf.reduce_sum(
+            logp_pi['action_id'] *
+            tf.one_hot(action_ids, depth=NUM_ACTION_FUNCTIONS),
+            axis=-1)
+        # args
+        logp_args = []
+        for batch_ind, action_id in enumerate(action_ids):
+            logp_args_ind = [0]
+            for ind, arg_type in enumerate(
+                    action_spec.functions[action_id].args):
+                if arg_type.name in ['screen', 'screen2', 'minimap']:
+                    location_id = action_args[batch_ind][ind][
+                        1] * self.location_out_width + action_args[batch_ind][
+                            ind][0]
+                    logp_args_ind += tf.reduce_sum(
+                        logp_pi['target_location'][batch_ind] *
+                        tf.one_hot(location_id,
+                                   depth=self.location_out_width *
+                                   self.location_out_height),
+                        axis=-1)
+                else:
+                    # non-spatial args
+                    logp_args_ind += tf.reduce_sum(
+                        logp_pi[arg_type.name][batch_ind] *
+                        tf.one_hot(action_args[batch_ind][ind],
+                                   depth=arg_type.sizes[0]),
+                        axis=-1)
+            logp_args.append(logp_args_ind)
+
+        return logp + tf.squeeze(tf.stack(logp_args))
 
     def loss(self, obs, batch_size, act_id, act_args, ret, action_spec):
         # expection grad log
@@ -400,7 +418,7 @@ def train(env_name, batch_size, epochs):
             # update policy
             batch_loss = train_step(buffer.sample(), buffer.size())
 
-            return batch_loss, batch_ret, batch_len
+            return batch_loss, buffer.batch_ret, buffer.batch_len
 
         for i in range(epochs):
             batch_loss, batch_ret, batch_len = train_one_epoch()
